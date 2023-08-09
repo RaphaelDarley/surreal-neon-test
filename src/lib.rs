@@ -1,6 +1,3 @@
-mod opt;
-mod utils;
-
 use std::ops::Deref;
 
 use neon::prelude::*;
@@ -9,12 +6,12 @@ use neon::{
     types::JsPromise,
 };
 use once_cell::sync::OnceCell;
-use opt::endpoint::Options;
-use serde_json::from_value;
-use surrealdb::engine::any::{self, Any};
 use surrealdb::sql::Value;
 use surrealdb::Connection;
-use surrealdb::{engine::local::Db, Surreal};
+use surrealdb::{
+    engine::local::{Db, File},
+    Surreal,
+};
 use tokio::runtime::Runtime;
 
 fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
@@ -24,17 +21,17 @@ fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
 
 fn new_db(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let address = cx.argument::<JsString>(0)?.value(&mut cx);
-    let opts = neon_serde2::from_value::<opt::endpoint::Options>(cx.argument::<JsValue>(1));
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
+
     let (deferred, promise) = cx.promise();
 
     rt.spawn(async move {
-        let resp = any::connect(address.as_str()).await;
+        let resp = Surreal::new::<File>(address.as_str()).await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let db: Surreal<Any> = resp.or_else(|err| cx.throw_error(err.to_string()))?;
+            let db: Surreal<Db> = resp.or_else(|err| cx.throw_error(err.to_string()))?;
 
             return Ok(cx.boxed(DBWrapper(db)));
         })
@@ -43,8 +40,8 @@ fn new_db(mut cx: FunctionContext) -> JsResult<JsPromise> {
     Ok(promise)
 }
 
-fn query_db(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let db = cx.argument::<JsBox<DBWrapper<Any>>>(0)?.deref().0.clone();
+fn query(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let db = cx.argument::<JsBox<DBWrapper<Db>>>(0)?.deref().0.clone();
     let query = cx.argument::<JsString>(1)?.value(&mut cx);
 
     let rt = runtime(&mut cx)?;
@@ -86,7 +83,7 @@ fn query_db(mut cx: FunctionContext) -> JsResult<JsPromise> {
 }
 
 fn use_ns(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let db = cx.argument::<JsBox<DBWrapper<Any>>>(0)?.deref().0.clone();
+    let db = cx.argument::<JsBox<DBWrapper<Db>>>(0)?.deref().0.clone();
     let ns = cx.argument::<JsString>(1)?.value(&mut cx);
 
     let rt = runtime(&mut cx)?;
@@ -108,7 +105,7 @@ fn use_ns(mut cx: FunctionContext) -> JsResult<JsPromise> {
 }
 
 fn use_db(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let db = cx.argument::<JsBox<DBWrapper<Any>>>(0)?.deref().0.clone();
+    let db = cx.argument::<JsBox<DBWrapper<Db>>>(0)?.deref().0.clone();
     let db_name = cx.argument::<JsString>(1)?.value(&mut cx);
 
     let rt = runtime(&mut cx)?;
@@ -132,7 +129,7 @@ fn use_db(mut cx: FunctionContext) -> JsResult<JsPromise> {
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("new_db", new_db)?;
-    cx.export_function("query_db", query_db)?;
+    cx.export_function("query", query)?;
     cx.export_function("use_ns", use_ns)?;
     cx.export_function("use_db", use_db)?;
     Ok(())
@@ -141,4 +138,3 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
 struct DBWrapper<C: Connection>(Surreal<C>);
 
 impl Finalize for DBWrapper<Db> {}
-impl Finalize for DBWrapper<Any> {}
